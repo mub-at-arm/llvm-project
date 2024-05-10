@@ -499,6 +499,39 @@ mlir::LogicalResult TransposeOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
+// MatMulOp
+//===----------------------------------------------------------------------===//
+
+mlir::LogicalResult MatMulOp::verify() {
+  auto lhsType = llvm::dyn_cast<RankedTensorType>(getLhs().getType());
+  auto rhsType = llvm::dyn_cast<RankedTensorType>(getRhs().getType());
+  auto resultType = llvm::dyn_cast<RankedTensorType>(getType());
+
+  if (!lhsType && !rhsType) {
+    return mlir::success();
+  }
+
+  if (lhsType.getRank() != 2 || rhsType.getRank() != 2) {
+    return emitError()
+           << "Input dimensions are not the same.";
+  }
+  if (lhsType.getDimSize(0) != rhsType.getDimSize(1)) {
+    return emitError()
+           << "Size of LHS Dim 0 is not equal to RHS Dim 1.";
+  }
+  if (resultType.getDimSize(0) != lhsType.getDimSize(0)) {
+    return emitError()
+           << "Size of result rows is not equal to LHS row size.";
+  }
+  if (resultType.getDimSize(1) != rhsType.getDimSize(1)) {
+    return emitError()
+           << "Sizes of result columns is not equal to RHS row size.";
+  }
+
+  return mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
 // Toy Types
 //===----------------------------------------------------------------------===//
 

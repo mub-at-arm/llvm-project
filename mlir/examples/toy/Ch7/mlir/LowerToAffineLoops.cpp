@@ -108,6 +108,37 @@ static void lowerOpToLoops(Operation *op, ValueRange operands,
   rewriter.replaceOp(op, alloc);
 }
 
+static Value myLowerOpToLoops(Operation *op, ValueRange operands,
+                           PatternRewriter &rewriter,
+                           LoopIterationFn processIteration) {
+  auto tensorType = llvm::cast<RankedTensorType>((*op->result_type_begin()));
+  auto loc = op->getLoc();
+
+  // Insert an allocation and deallocation for the result of this operation.
+  auto memRefType = convertTensorToMemRef(tensorType);
+  auto alloc = insertAllocAndDealloc(memRefType, loc, rewriter);
+
+  // Create a nest of affine loops, with one loop per dimension of the shape.
+  // The buildAffineLoopNest function takes a callback that is used to construct
+  // the body of the innermost loop given a builder, a location and a range of
+  // loop induction variables.
+  SmallVector<int64_t, 4> lowerBounds(tensorType.getRank(), /*Value=*/0);
+  SmallVector<int64_t, 4> steps(tensorType.getRank(), /*Value=*/1);
+  affine::buildAffineLoopNest(
+      rewriter, loc, lowerBounds, tensorType.getShape(), steps,
+      [&](OpBuilder &nestedBuilder, Location loc, ValueRange ivs) {
+        // Call the processing function with the rewriter, the memref operands,
+        // and the loop induction variables. This function will return the value
+        // to store at the current index.
+        Value valueToStore = processIteration(nestedBuilder, operands, ivs);
+        nestedBuilder.create<affine::AffineStoreOp>(loc, valueToStore, alloc,
+                                                    ivs);
+      });
+
+  // Replace this operation with the generated alloc.
+  return alloc;
+}
+
 namespace {
 //===----------------------------------------------------------------------===//
 // ToyToAffine RewritePatterns: Binary operations
@@ -316,6 +347,68 @@ struct TransposeOpLowering : public ConversionPattern {
   }
 };
 
+//===----------------------------------------------------------------------===//
+// ToyToAffine RewritePatterns: MatMul operations
+//===----------------------------------------------------------------------===//
+
+struct MatMulOpLowering : public ConversionPattern {
+  MatMulOpLowering(MLIRContext *ctx)
+      : ConversionPattern(toy::MatMulOp::getOperationName(), 1, ctx) {}
+
+  LogicalResult
+  matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                  ConversionPatternRewriter &rewriter) const final {
+    typename toy::MatMulOp::Adaptor matmulAdaptor(operands);
+    auto matmulOp = llvm::cast<toy::MatMulOp>(op);
+    auto loc = op->getLoc();
+    auto opLhs = llvm::cast<RankedTensorType>(matmulOp.getLhs().getType());
+    auto opRhs = llvm::cast<RankedTensorType>(matmulOp.getRhs().getType());
+    auto opResult = llvm::cast<RankedTensorType>(matmulOp.getResult().getType());
+
+    auto alloc = myLowerOpToLoops(
+        op, operands, rewriter,
+        [loc](OpBuilder &builder, ValueRange, ValueRange) {
+          return builder.create<arith::ConstantOp>(loc, builder.getF64FloatAttr(0));
+        });
+
+
+
+    SmallVector<int64_t, 3> lowerBounds{0, 0, 0};
+    SmallVector<int64_t, 3> upperBounds{
+        opLhs.getDimSize(0), opRhs.getDimSize(1), opLhs.getDimSize(1)};
+    SmallVector<int64_t, 3> steps{1, 1, 1};
+
+    affine::buildAffineLoopNest(
+        rewriter, loc, lowerBounds, upperBounds, steps,
+        [&](OpBuilder &builder, Location loc, ValueRange ivs) {
+          auto lhs = matmulAdaptor.getLhs();
+          auto rhs = matmulAdaptor.getRhs();
+
+          // ivs = [m,n,k]
+
+          SmallVector<Value, 2> outputIndex = {ivs[0], ivs[1]}; // [m,n]
+          SmallVector<Value, 2> lhsIndex = {ivs[0], ivs[2]};    // [m,k]
+          SmallVector<Value, 2> rhsIndex = {ivs[2], ivs[1]};    // [k,n]
+
+          auto loadedAcc =
+              builder.create<affine::AffineLoadOp>(loc, alloc, outputIndex);
+          auto loadedLhs =
+              builder.create<affine::AffineLoadOp>(loc, lhs, lhsIndex);
+          auto loadedRhs =
+              builder.create<affine::AffineLoadOp>(loc, rhs, rhsIndex);
+          auto mulOp =
+              builder.create<arith::MulFOp>(loc, loadedLhs, loadedRhs);
+          auto addOp =
+              builder.create<arith::AddFOp>(loc, mulOp, loadedAcc);
+
+          auto result = builder.create<affine::AffineStoreOp>(loc, addOp, alloc, outputIndex);
+        });
+
+    rewriter.replaceOp(op, alloc);
+    return mlir::success();
+  }
+};
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -366,7 +459,7 @@ void ToyToAffineLoweringPass::runOnOperation() {
   // the set of patterns that will lower the Toy operations.
   RewritePatternSet patterns(&getContext());
   patterns.add<AddOpLowering, ConstantOpLowering, FuncOpLowering, MulOpLowering,
-               PrintOpLowering, ReturnOpLowering, TransposeOpLowering>(
+               PrintOpLowering, ReturnOpLowering, TransposeOpLowering, MatMulOpLowering>(
       &getContext());
 
   // With the target and rewrite patterns defined, we can now attempt the

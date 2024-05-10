@@ -332,4 +332,27 @@ def TransposeOp : Toy_Op<"transpose"> {
   let hasVerifier = 1;
 }
 
+//===----------------------------------------------------------------------===//
+// MatMulOp
+//===----------------------------------------------------------------------===//
+
+def MatMulOp : Toy_Op<"matmul"> {
+  let summary = "matrix multiply operation";
+  let description = [{
+    Performs a matrix multiplication.
+  }];
+
+  let arguments = (ins F64Tensor:$lhs, F64Tensor:$rhs);
+  let results = (outs F64Tensor);
+
+  let assemblyFormat = [{
+    $lhs $rhs attr-dict : functional-type($lhs, $rhs, results)
+  }];
+
+  let hasVerifier = 1;
+
+  let builders = [
+    OpBuilder<(ins "Value":$lhs, "Value":$rhs)>
+  ];
+}
 #endif // TOY_OPS
