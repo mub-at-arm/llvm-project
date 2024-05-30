@@ -513,6 +513,11 @@ bool TargetTransformInfo::isLegalStridedLoadStore(Type *DataType,
   return TTIImpl->isLegalStridedLoadStore(DataType, Alignment);
 }
 
+bool TargetTransformInfo::isLegalMaskedVectorHistogram(Type *AddrType,
+                                                       Type *DataType) const {
+  return TTIImpl->isLegalMaskedVectorHistogram(AddrType, DataType);
+}
+
 bool TargetTransformInfo::enableOrderedReductions() const {
   return TTIImpl->enableOrderedReductions();
 }
@@ -1032,7 +1037,7 @@ TargetTransformInfo::getVectorInstrCost(const Instruction &I, Type *Val,
 
 InstructionCost TargetTransformInfo::getReplicationShuffleCost(
     Type *EltTy, int ReplicationFactor, int VF, const APInt &DemandedDstElts,
-    TTI::TargetCostKind CostKind) {
+    TTI::TargetCostKind CostKind) const {
   InstructionCost Cost = TTIImpl->getReplicationShuffleCost(
       EltTy, ReplicationFactor, VF, DemandedDstElts, CostKind);
   assert(Cost >= 0 && "TTI should not produce negative costs!");
